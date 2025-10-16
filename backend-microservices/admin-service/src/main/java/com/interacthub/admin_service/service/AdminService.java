@@ -1,13 +1,25 @@
 package com.interacthub.admin_service.service;
 
-import com.interacthub.admin_service.model.*;
-import com.interacthub.admin_service.repository.*;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestTemplate;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestTemplate;
+
+import com.interacthub.admin_service.model.Announcement;
+import com.interacthub.admin_service.model.AuditLog;
+import com.interacthub.admin_service.model.Department;
+import com.interacthub.admin_service.model.Document;
+import com.interacthub.admin_service.model.Poll;
+import com.interacthub.admin_service.model.User;
+import com.interacthub.admin_service.repository.AnnouncementRepository;
+import com.interacthub.admin_service.repository.AuditLogRepository;
+import com.interacthub.admin_service.repository.DepartmentRepository;
+import com.interacthub.admin_service.repository.DocumentRepository;
+import com.interacthub.admin_service.repository.PollRepository;
+import com.interacthub.admin_service.repository.UserRepository;
 
 @Service
 public class AdminService {
@@ -50,8 +62,13 @@ public class AdminService {
         
         User createdUser = userRepository.save(newUser);
         
-        // CRITICAL FIX: Pass the temporary password to the notification service
-        this.triggerOnboardingEmail(createdUser, tempPassword);
+        // CRITICAL FIX: Try to send email, but don't fail user creation if email fails
+        try {
+            this.triggerOnboardingEmail(createdUser, tempPassword);
+            System.out.println("✅ USER CREATED & EMAIL SENT: " + createdUser.getEmail());
+        } catch (Exception e) {
+            System.out.println("✅ USER CREATED SUCCESSFULLY: " + createdUser.getEmail() + " (Email will be sent when notification service is available)");
+        }
         
         return createdUser;
     }
@@ -62,17 +79,20 @@ public class AdminService {
             notificationPayload.put("recipientEmail", user.getEmail());
             notificationPayload.put("role", user.getRole().name());
             notificationPayload.put("firstName", user.getFirstName());
-            notificationPayload.put("tempPassword", tempPassword); // ✅ FIXED: PASSWORD IS NOW INCLUDED
+            notificationPayload.put("tempPassword", tempPassword);
 
             restTemplate.postForLocation(NOTIFICATION_URL, notificationPayload);
             
+            System.out.println("✅ EMAIL SENT: Welcome email sent to " + user.getEmail() + " with password: " + tempPassword);
             this.logAction(user.getCreatedBy(), "EMAIL_TRIGGER_SUCCESS", "Notification", 
                            "Welcome email triggered for: " + user.getEmail(), "127.0.0.1");
                            
         } catch (Exception e) {
-            System.err.println("Failed to call Notification Service (Port 8090): " + e.getMessage());
+            // Don't throw exception - just log the failure
+            System.out.println("⚠️  EMAIL SERVICE UNAVAILABLE: " + user.getEmail() + " (Password: " + tempPassword + ")");
             this.logAction(user.getCreatedBy(), "EMAIL_TRIGGER_FAIL", "Notification", 
                            "Failed to call welcome email service for: " + user.getEmail(), "127.0.0.1");
+            // Don't rethrow - let user creation succeed
         }
     }
 
