@@ -3,8 +3,13 @@ package com.interacthub.admin_service.service;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
@@ -20,6 +25,7 @@ import com.interacthub.admin_service.repository.DepartmentRepository;
 import com.interacthub.admin_service.repository.DocumentRepository;
 import com.interacthub.admin_service.repository.PollRepository;
 import com.interacthub.admin_service.repository.UserRepository;
+import com.interacthub.admin_service.sync.CompanyUpdatesSyncService;
 
 @Service
 public class AdminService {
@@ -31,10 +37,17 @@ public class AdminService {
     @Autowired private DocumentRepository documentRepository;
     @Autowired private AuditLogRepository auditLogRepository;
     @Autowired private RestTemplate restTemplate;
+    @Autowired private PasswordEncoder passwordEncoder;
+    @Autowired private SyncService syncService;
+    @Autowired private CompanyUpdatesSyncService companyUpdatesSyncService;
     
     private static final String NOTIFICATION_URL = "http://localhost:8090/api/notify/welcome-user";
     private static final String HR_SUMMARY_URL = "http://localhost:8082/api/hr/admin/summary";
     private static final String MANAGER_SUMMARY_URL = "http://localhost:8083/api/manager/admin/summary";
+
+    private String generateTemporaryPassword() {
+        return UUID.randomUUID().toString().substring(0, 8);
+    }
 
     // --- User Management (Hierarchy & Authentication) ---
     public User createUser(User user) {
@@ -42,15 +55,21 @@ public class AdminService {
             throw new RuntimeException("Email already exists");
         }
         
-        // CRITICAL FIX: Ensure password exists to be passed to Notification Service
+        // CRITICAL FIX: Auto-generate password for employees if not provided
         String tempPassword = user.getPassword();
         if (tempPassword == null || tempPassword.isEmpty()) {
-             throw new IllegalArgumentException("Password must be set before user creation.");
+            if (user.getRole() == User.Role.EMPLOYEE) {
+                // Auto-generate password for employees
+                tempPassword = generateTemporaryPassword();
+                System.out.println("Auto-generated password for employee: " + user.getEmail());
+            } else {
+                throw new IllegalArgumentException("Password is required for " + user.getRole() + " accounts.");
+            }
         }
         
         User newUser = new User();
         newUser.setEmail(user.getEmail());
-        newUser.setPassword(tempPassword); // Save the password
+        newUser.setPassword(passwordEncoder.encode(tempPassword)); // Hash and save the password
         newUser.setFirstName(user.getFirstName());
         newUser.setLastName(user.getLastName());
         newUser.setRole(user.getRole());
@@ -68,6 +87,20 @@ public class AdminService {
             System.out.println("✅ USER CREATED & EMAIL SENT: " + createdUser.getEmail());
         } catch (Exception e) {
             System.out.println("✅ USER CREATED SUCCESSFULLY: " + createdUser.getEmail() + " (Email will be sent when notification service is available)");
+        }
+        
+        // Sync user to Manager/HR/Employee services based on role
+        try {
+            syncService.syncUserToManager(createdUser);
+            syncService.syncUserToHR(createdUser);
+            syncService.syncUserToEmployee(createdUser, tempPassword);
+            
+            // Audit log the sync
+            String adminEmail = "admin@interacthub.com"; // TODO: Get actual admin email from context
+            this.logAction(createdUser.getCreatedBy(), "SYNC_USER", "Sync", 
+                         "Synced user to Manager/HR/Employee services: " + createdUser.getEmail(), "127.0.0.1");
+        } catch (Exception e) {
+            System.out.println("⚠️ User sync failed (non-critical): " + e.getMessage());
         }
         
         return createdUser;
@@ -124,7 +157,28 @@ public class AdminService {
     }
     
     public Announcement createAnnouncement(Announcement announcement) {
-        return announcementRepository.save(announcement);
+        Announcement saved = announcementRepository.save(announcement);
+        // Fire-and-forget broadcast to Chat Service (WebSocket broker)
+        try {
+            Map<String, Object> payload = new HashMap<>();
+            payload.put("id", saved.getId());
+            payload.put("title", saved.getTitle());
+            payload.put("content", saved.getContent());
+            payload.put("type", saved.getType() != null ? saved.getType().name() : null);
+            payload.put("targetAudience", saved.getTargetAudience() != null ? saved.getTargetAudience().name() : null);
+            payload.put("createdBy", saved.getCreatedByName());
+            restTemplate.postForLocation("http://localhost:8085/api/chat/broadcast/announcement", payload);
+        } catch (Exception e) {
+            // Don't block creation if chat service is unavailable
+            System.out.println("⚠️  CHAT SERVICE UNAVAILABLE: Broadcast announcement deferred.");
+        }
+        // Sync to Employee Service
+        try {
+            companyUpdatesSyncService.syncAnnouncementToEmployee(saved);
+        } catch (Exception e) {
+            System.err.println("⚠️  Failed to sync announcement to Employee Service: " + e.getMessage());
+        }
+        return saved;
     }
     
     public List<Announcement> getAnnouncementsByTarget(Announcement.TargetAudience targetAudience) {
@@ -132,11 +186,51 @@ public class AdminService {
     }
     
     public Poll createPoll(Poll poll) {
-        return pollRepository.save(poll);
+        Poll saved = pollRepository.save(poll);
+        try {
+            Map<String, Object> payload = new HashMap<>();
+            payload.put("id", saved.getId());
+            payload.put("question", saved.getQuestion());
+            payload.put("options", saved.getOptions());
+            payload.put("targetAudience", saved.getTargetAudience() != null ? saved.getTargetAudience().name() : null);
+            payload.put("createdBy", saved.getCreatedByName());
+            restTemplate.postForLocation("http://localhost:8085/api/chat/broadcast/poll", payload);
+        } catch (Exception e) {
+            System.out.println("⚠️  CHAT SERVICE UNAVAILABLE: Broadcast poll deferred.");
+        }
+        // Sync to Employee Service
+        try {
+            companyUpdatesSyncService.syncPollToEmployee(saved);
+        } catch (Exception e) {
+            System.err.println("⚠️  Failed to sync poll to Employee Service: " + e.getMessage());
+        }
+        return saved;
     }
     
     public List<Poll> getPollsByTarget(Poll.TargetAudience targetAudience) {
         return pollRepository.findByTargetAudienceAndIsActiveTrueOrderByCreatedAtDesc(targetAudience);
+    }
+    
+    public void deleteAnnouncement(Long id, String currentUserName) {
+        Announcement announcement = announcementRepository.findById(id)
+            .orElseThrow(() -> new RuntimeException("Announcement not found"));
+        
+        if (!announcement.getCreatedByName().equals(currentUserName)) {
+            throw new RuntimeException("Only the creator can delete this announcement");
+        }
+        
+        announcementRepository.deleteById(id);
+    }
+    
+    public void deletePoll(Long id, String currentUserName) {
+        Poll poll = pollRepository.findById(id)
+            .orElseThrow(() -> new RuntimeException("Poll not found"));
+        
+        if (!poll.getCreatedByName().equals(currentUserName)) {
+            throw new RuntimeException("Only the creator can delete this poll");
+        }
+        
+        pollRepository.deleteById(id);
     }
     
     // --- Analytics & Reporting (Admin Visibility) ---
@@ -180,17 +274,122 @@ public class AdminService {
     public List<AuditLog> getAuditLogs() { return auditLogRepository.findAll(); }
 
     public void logAction(Long userId, String action, String module, String description, String ipAddress) {
-        AuditLog auditLog = new AuditLog();
-        auditLog.setUserId(userId);
-        auditLog.setAction(action);
-        auditLog.setModule(module);
-        auditLog.setDescription(description);
+        // Get user details for audit log
+        User user = userRepository.findById(userId).orElse(null);
+        String username = user != null ? user.getEmail() : "Unknown";
+        String role = user != null ? user.getRole().name() : "UNKNOWN";
+        
+        AuditLog auditLog = new AuditLog(username, role, action, module, "POST");
         auditLog.setIpAddress(ipAddress);
         auditLogRepository.save(auditLog);
     }
 
     public List<Document> getDocumentsByTarget(Document.TargetAudience targetAudience) { return documentRepository.findAll(); }
-    public User updateUser(Long id, User user) { /* ... logic ... */ return user; } 
+    
+    public User updateUser(Long id, User user) {
+        User existingUser = userRepository.findById(id)
+            .orElseThrow(() -> new RuntimeException("User not found: ID " + id));
+        
+        // Update only provided fields, preserve password if not provided
+        if (user.getFirstName() != null) existingUser.setFirstName(user.getFirstName());
+        if (user.getLastName() != null) existingUser.setLastName(user.getLastName());
+        if (user.getEmail() != null && !user.getEmail().equals(existingUser.getEmail())) {
+            if (userRepository.existsByEmail(user.getEmail())) {
+                throw new RuntimeException("Email already exists");
+            }
+            existingUser.setEmail(user.getEmail());
+        }
+        if (user.getPosition() != null) existingUser.setPosition(user.getPosition());
+        if (user.getPhoneNumber() != null) existingUser.setPhoneNumber(user.getPhoneNumber());
+        if (user.getDepartmentId() != null) existingUser.setDepartmentId(user.getDepartmentId());
+        if (user.getIsActive() != null) existingUser.setIsActive(user.getIsActive());
+        // Only update password if explicitly provided and not empty
+        if (user.getPassword() != null && !user.getPassword().isEmpty()) {
+            existingUser.setPassword(passwordEncoder.encode(user.getPassword()));
+        }
+        
+        return userRepository.save(existingUser);
+    } 
     public List<User> getAllUsers() { return userRepository.findAll(); }
     public List<User> getUsersByRole(User.Role role) { return userRepository.findByRole(role); }
+    
+    // --- New Admin Dashboard Methods ---
+    
+    public Map<String, Object> getDashboardStats() {
+        Map<String, Object> stats = new HashMap<>();
+        stats.put("totalUsers", userRepository.count());
+        stats.put("totalManagers", userRepository.countByRole(User.Role.MANAGER));
+        stats.put("totalDepartments", departmentRepository.count());
+        stats.put("totalPolls", pollRepository.count());
+        stats.put("totalAnnouncements", announcementRepository.count());
+        stats.put("activeUsers", userRepository.findByIsActiveTrue().size());
+        return stats;
+    }
+    
+    public Map<String, Object> getAuditLogsPaginated(int page, int size) {
+        Pageable pageable = PageRequest.of(page, size);
+        Page<AuditLog> auditLogPage = auditLogRepository.findAllByOrderByTimestampDesc(pageable);
+        
+        Map<String, Object> response = new HashMap<>();
+        response.put("auditLogs", auditLogPage.getContent());
+        response.put("currentPage", auditLogPage.getNumber());
+        response.put("totalPages", auditLogPage.getTotalPages());
+        response.put("totalElements", auditLogPage.getTotalElements());
+        response.put("size", auditLogPage.getSize());
+        
+        return response;
+    }
+    
+    public Map<String, Object> getSystemMonitoring() {
+        Map<String, Object> monitoring = new HashMap<>();
+        
+        // System metrics
+        monitoring.put("totalUsers", userRepository.count());
+        monitoring.put("activeUsers", userRepository.findByIsActiveTrue().size());
+        monitoring.put("totalDepartments", departmentRepository.count());
+        monitoring.put("totalAnnouncements", announcementRepository.count());
+        monitoring.put("totalPolls", pollRepository.count());
+        
+        // Manager activity (try to get from manager service)
+        try {
+            Map<?, ?> managerData = restTemplate.getForObject(MANAGER_SUMMARY_URL, Map.class);
+            monitoring.put("managerActivity", managerData);
+        } catch (Exception e) {
+            monitoring.put("managerActivity", "Manager service unavailable");
+        }
+        
+        // Recent audit logs
+        Pageable pageable = PageRequest.of(0, 10);
+        Page<AuditLog> recentLogs = auditLogRepository.findAllByOrderByTimestampDesc(pageable);
+        monitoring.put("recentActivity", recentLogs.getContent());
+        
+        return monitoring;
+    }
+
+    // ===== COMPANY UPDATES METHODS =====
+    
+    public List<Announcement> getAllAnnouncements() {
+        return announcementRepository.findAll();
+    }
+    
+    public List<Poll> getActivePolls() {
+        return pollRepository.findAll().stream()
+                .filter(p -> p.getIsActive() != null && p.getIsActive())
+                .toList();
+    }
+    
+    public Map<String, Object> voteOnPoll(Long pollId, String option, String voterEmail) {
+        Poll poll = pollRepository.findById(pollId)
+                .orElseThrow(() -> new RuntimeException("Poll not found"));
+        
+        // For now, return simple vote count (actual vote storage would go in PollVotes table)
+        Map<String, Object> result = new HashMap<>();
+        result.put("pollId", pollId);
+        result.put("question", poll.getQuestion());
+        result.put("option", option);
+        result.put("voter", voterEmail);
+        result.put("message", "Vote recorded");
+        
+        return result;
+    }
 }

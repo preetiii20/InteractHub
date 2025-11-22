@@ -10,47 +10,72 @@ public class AuditLog {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
     
-    @Column(name = "user_id")
-    private Long userId;
+    @Column(name = "username", nullable = false)
+    private String username;
     
-    @Column(nullable = false)
+    @Column(name = "role", nullable = false)
+    private String role;
+    
+    @Column(name = "action", nullable = false)
     private String action;
     
-    @Column(nullable = false)
-    private String module;
+    @Column(name = "endpoint", nullable = false)
+    private String endpoint;
     
-    private String description;
+    @Column(name = "method", nullable = false)
+    private String method;
+    
+    @Column(name = "timestamp", nullable = false)
+    private LocalDateTime timestamp;
     
     @Column(name = "ip_address")
     private String ipAddress;
     
-    @Column(name = "created_at")
-    private LocalDateTime createdAt;
+    @Column(name = "user_agent")
+    private String userAgent;
     
     @PrePersist
     protected void onCreate() {
-        createdAt = LocalDateTime.now();
+        timestamp = LocalDateTime.now();
+    }
+    
+    // Constructors
+    public AuditLog() {}
+    
+    public AuditLog(String username, String role, String action, String endpoint, String method) {
+        this.username = username;
+        this.role = role;
+        this.action = action;
+        this.endpoint = endpoint;
+        this.method = method;
+        this.timestamp = LocalDateTime.now();
     }
     
     // Getters and Setters
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
     
-    public Long getUserId() { return userId; }
-    public void setUserId(Long userId) { this.userId = userId; }
+    public String getUsername() { return username; }
+    public void setUsername(String username) { this.username = username; }
+    
+    public String getRole() { return role; }
+    public void setRole(String role) { this.role = role; }
     
     public String getAction() { return action; }
     public void setAction(String action) { this.action = action; }
     
-    public String getModule() { return module; }
-    public void setModule(String module) { this.module = module; }
+    public String getEndpoint() { return endpoint; }
+    public void setEndpoint(String endpoint) { this.endpoint = endpoint; }
     
-    public String getDescription() { return description; }
-    public void setDescription(String description) { this.description = description; }
+    public String getMethod() { return method; }
+    public void setMethod(String method) { this.method = method; }
+    
+    public LocalDateTime getTimestamp() { return timestamp; }
+    public void setTimestamp(LocalDateTime timestamp) { this.timestamp = timestamp; }
     
     public String getIpAddress() { return ipAddress; }
     public void setIpAddress(String ipAddress) { this.ipAddress = ipAddress; }
     
-    public LocalDateTime getCreatedAt() { return createdAt; }
-    public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
+    public String getUserAgent() { return userAgent; }
+    public void setUserAgent(String userAgent) { this.userAgent = userAgent; }
 }

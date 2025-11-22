@@ -1,14 +1,23 @@
 package com.interacthub.admin_service.controller;
 
-import com.interacthub.admin_service.model.User;
-import com.interacthub.admin_service.service.AuthService;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
 import java.util.Map;
 
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.CrossOrigin;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+import com.interacthub.admin_service.model.User;
+import com.interacthub.admin_service.service.AuthService;
+
 @RestController
-@RequestMapping("/api/auth")
+@RequestMapping("/api/admin/auth")
+@CrossOrigin(origins = "http://localhost:3000")
 public class AuthController {
     
     @Autowired
@@ -29,6 +38,7 @@ public class AuthController {
         try {
             String email = loginRequest.get("email");
             String password = loginRequest.get("password");
+            
             Map<String, Object> response = authService.login(email, password);
             return ResponseEntity.ok(response);
         } catch (RuntimeException e) {

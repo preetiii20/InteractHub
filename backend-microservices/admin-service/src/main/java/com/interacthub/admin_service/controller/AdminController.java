@@ -1,19 +1,40 @@
 package com.interacthub.admin_service.controller;
 
-import com.interacthub.admin_service.model.*;
-import com.interacthub.admin_service.service.AdminService;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
 import java.util.List;
 import java.util.Map;
 
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.ResponseEntity;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
+import org.springframework.web.bind.annotation.CrossOrigin;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+import com.interacthub.admin_service.model.Announcement;
+import com.interacthub.admin_service.model.AuditLog;
+import com.interacthub.admin_service.model.Department;
+import com.interacthub.admin_service.model.Poll;
+import com.interacthub.admin_service.model.User;
+import com.interacthub.admin_service.service.AdminService;
+
 @RestController
+@CrossOrigin(origins = "http://localhost:3000")
 @RequestMapping("/api/admin")
 public class AdminController {
     
     @Autowired
     private AdminService adminService;
+    
+    @Autowired
+    private SimpMessagingTemplate messagingTemplate;
     
     // --- 1. User Management (CRUD) ---
     
@@ -60,7 +81,7 @@ public class AdminController {
     }
     
     @PostMapping("/departments")
-    public ResponseEntity<Department> createDepartment(@RequestBody Department department) {
+    public ResponseEntity<?> createDepartment(@RequestBody Department department) {
         try {
             return ResponseEntity.ok(adminService.createDepartment(department));
         } catch (RuntimeException e) {
@@ -90,6 +111,48 @@ public class AdminController {
         return adminService.getPollsByTarget(targetAudience);
     }
     
+    @DeleteMapping("/announcements/{id}")
+    public ResponseEntity<?> deleteAnnouncement(@PathVariable Long id, @RequestHeader(value = "X-User-Name", required = false) String userName) {
+        try {
+            if (userName == null || userName.trim().isEmpty()) {
+                return ResponseEntity.status(400).body(Map.of("error", "User name is required"));
+            }
+            adminService.deleteAnnouncement(id, userName.trim());
+            
+            // Broadcast deletion to all connected clients
+            messagingTemplate.convertAndSend("/topic/announcements.deleted", Map.of(
+                "id", id,
+                "type", "ANNOUNCEMENT",
+                "deletedBy", userName.trim()
+            ));
+            
+            return ResponseEntity.ok(Map.of("message", "Announcement deleted successfully"));
+        } catch (RuntimeException e) {
+            return ResponseEntity.status(404).body(Map.of("error", e.getMessage()));
+        }
+    }
+    
+    @DeleteMapping("/polls/{id}")
+    public ResponseEntity<?> deletePoll(@PathVariable Long id, @RequestHeader(value = "X-User-Name", required = false) String userName) {
+        try {
+            if (userName == null || userName.trim().isEmpty()) {
+                return ResponseEntity.status(400).body(Map.of("error", "User name is required"));
+            }
+            adminService.deletePoll(id, userName.trim());
+            
+            // Broadcast deletion to all connected clients
+            messagingTemplate.convertAndSend("/topic/polls.deleted", Map.of(
+                "id", id,
+                "type", "POLL",
+                "deletedBy", userName.trim()
+            ));
+            
+            return ResponseEntity.ok(Map.of("message", "Poll deleted successfully"));
+        } catch (RuntimeException e) {
+            return ResponseEntity.status(404).body(Map.of("error", e.getMessage()));
+        }
+    }
+    
     // --- 4. Analytics & Reporting (Cross-Service Visibility) ---
 
     @GetMapping("/analytics")
@@ -106,5 +169,24 @@ public class AdminController {
     @GetMapping("/audit-logs")
     public List<AuditLog> getAuditLogs() {
         return adminService.getAuditLogs();
+    }
+    
+    // --- 5. New Admin Dashboard Endpoints ---
+    
+    @GetMapping("/dashboard")
+    public ResponseEntity<Map<String, Object>> getDashboard() {
+        return ResponseEntity.ok(adminService.getDashboardStats());
+    }
+    
+    @GetMapping("/audit/logs")
+    public ResponseEntity<Map<String, Object>> getAuditLogsPaginated(
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        return ResponseEntity.ok(adminService.getAuditLogsPaginated(page, size));
+    }
+    
+    @GetMapping("/monitoring")
+    public ResponseEntity<Map<String, Object>> getSystemMonitoring() {
+        return ResponseEntity.ok(adminService.getSystemMonitoring());
     }
 }
