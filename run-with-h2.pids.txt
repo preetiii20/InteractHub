@@ -1,4 +1,0 @@
-admin-service:21984
-chat:24556
-manager-service:24192
-notification-service:8252
